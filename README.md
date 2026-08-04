@@ -2,33 +2,108 @@
 
 给**没有图像能力的 LLM** 的"看图能力"工具：把图片的像素 + 坐标整理成模型可读的**文本**，让模型理解复杂图片（截图、文档、图表、UI 界面等）。
 
-**最简单用法：一条命令/一次调用，其余全部自动** —— `vision analyze <图片>` 内部自动完成 全图概览 → 自动挑选关注区域 → 编码细看 → OCR → 输出完整 Markdown 报告。用户只需给图，不需要任何调度。
+**用法一句话：`vision analyze 你的图片.png`，其余全部自动。** 内部自动完成 全图概览 → 自动挑选关注区域 → 编码细看 → OCR → 输出完整 Markdown 报告，不需要任何手动调度。
 
-核心思路：**先看全图 chunk 概览（像 CNN 池化）→ 自动选值得细看的归一化坐标区域 → 裁剪放大并转成文本编码 → 可选 OCR → 汇总 Markdown 报告**。
+---
 
-## 安装
+## 安装（约 2 分钟）
 
-需要 Python ≥ 3.11（推荐用 [uv](https://docs.astral.sh/uv/) 管理）：
+### 第 1 步：安装 uv（Python 包管理器，会自动带上 Python，无需手动装 Python）
 
-```bash
-uv sync --extra dev   # 安装依赖（含 EasyOCR/torch）
+**Windows**（任选其一）：
+
+```powershell
+winget install astral-sh.uv
 ```
 
-## 快速开始
+或
 
-```bash
-uv run vision analyze <图片>              # 【一键】自动分析，输出完整 Markdown 报告
-uv run vision analyze <图片> --out report.md   # 报告保存到文件
-uv run vision demo                        # 演示：生成合成图并一键分析
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-`vision analyze` 无需任何参数即可工作（默认 8x8 概览网格、自动挑 3 个区域细看、自动 OCR）。
+**macOS / Linux**：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+装完重开终端，输入 `uv --version` 能输出版本号即成功。
+
+### 第 2 步：获取项目并安装依赖
+
+```bash
+git clone https://github.com/JoshuaLam21/vision-reader.git
+cd vision-reader
+uv sync --extra dev --extra mcp
+```
+
+> ⏳ 首次安装需要下载 torch / easyocr 等依赖，**约几百 MB，请耐心等几分钟**，进度条走完即可。
+
+### 第 3 步：验证安装成功
+
+```bash
+uv run vision demo
+```
+
+看到终端输出一份 Markdown 报告、并在 `demo/output/report.md` 生成文件，说明安装成功。
+
+---
+
+## 快速开始（30 秒上手）
+
+### 看你自己的一张图
+
+```bash
+uv run vision analyze 你的图片.png --out report.md
+```
+
+打开 `report.md`，就是完整的图片理解报告（整体概览 + 局部细节 + OCR 文字 + 坐标索引）。
+
+> 首次运行会自动下载 OCR 模型权重（约 60 MB，一次性，存到 `~/.EasyOCR`），请耐心等待。
+
+### 没有图片？跑个演示
+
+```bash
+uv run vision demo
+```
+
+自动生成一张合成图并分析，输出到 `demo/output/`。
+
+### 常用命令速查
+
+| 想做什么 | 命令 |
+|---|---|
+| 一键分析图片（主用法） | `uv run vision analyze <图片>` |
+| 分析并保存报告 | `uv run vision analyze <图片> --out report.md` |
+| 只看全图概览 | `uv run vision overview <图片>` |
+| 裁剪某区域细看 | `uv run vision crop <图片> --region 0.1,0.1,0.5,0.5` |
+| 提取某区域文字 | `uv run vision ocr <图片> --region 0.1,0.1,0.5,0.5` |
+| 跑完整演示 | `uv run vision demo` |
+
+所有坐标都是**归一化坐标 (0~1)**，`0,0` 是左上角，`1,1` 是右下角。
+
+---
+
+## 常见问题（FAQ）
+
+**Q：`uv` 命令找不到？**
+安装 uv 后需要重开终端（让 PATH 生效）；Windows 用户也可以重启一下终端窗口。
+
+**Q：安装/下载很慢？**
+首次 `uv sync` 要下载 torch（几百 MB），首次 `analyze` 要下载 OCR 模型（约 60 MB）。都是**一次性**的，之后秒开。网络慢可考虑配置镜像源。
+
+**Q：`vision analyze` 报错？**
+先跑 `uv run vision demo` 确认环境正常；如果 demo 正常而你自己的图报错，可能是图片路径含中文/空格——用引号包起来：`uv run vision analyze "我的 图片.png"`。
+
+**Q：我想让 Claude / 我的 AI 直接"看图"？**
+见下方 **MCP Server** 章节，配置一次后，AI 就能调用 `vision_analyze` 工具看你的图。
+
+---
 
 ## CLI 用法
 
-所有坐标均为**归一化坐标 (0~1)**。
-
-### 0. 一键分析（推荐，主用法）
+### 一键分析（推荐，主用法）
 
 ```bash
 uv run vision analyze <图片> [--grid 8x8] [--top 3] [--out report.md] [--no-ocr]
@@ -43,46 +118,18 @@ uv run vision analyze <图片> [--grid 8x8] [--top 3] [--out report.md] [--no-oc
 
 内部自动流程：全图概览 → 按边缘密度排序挑选候选区域、膨胀并合并重叠 → 每个区域自动选编码器（颜色丰富用 `color_stats`，否则 `ascii_art`）→ 疑似文字区域自动 OCR → 汇总四段式 Markdown 报告。
 
-### 1. 全图概览（分步用法，高级）
+### 分步用法（高级）
 
 ```bash
-uv run vision overview <图片> --grid 8x8
+uv run vision overview <图片> --grid 8x8          # 1. 全图 chunk 概览
+uv run vision crop <图片> --region 0.1,0.1,0.5,0.5 --encode ascii_art --size 64   # 2. 裁剪+编码
+uv run vision ocr <图片> --region 0.02,0.42,0.6,0.58 --engine easyocr --languages ch_sim,en  # 3. OCR
+uv run vision report obs1.json obs2.json --out report.md   # 4. 汇总报告
 ```
 
-输出 N×N chunk 网格，每块含归一化坐标、主色、亮度、边缘密度、颜色方差，模型据此决定细看哪些区域。
+`crop` 参数：`--scale` 放大倍数（默认 2.0）、`--encode` 编码器（`ascii_art` / `grayscale_grid` / `color_stats`）、`--color` 保留彩色、`--json` 输出 JSON 供 `report` 汇总。
 
-### 2. 裁剪 + 编码（模型的细看）
-
-```bash
-uv run vision crop <图片> --region 0.1,0.1,0.5,0.5 --encode ascii_art --size 64
-```
-
-参数：
-
-| 参数 | 说明 |
-|---|---|
-| `--region x1,y1,x2,y2` | 归一化坐标（必填） |
-| `--scale` | 放大倍数，默认 2.0（LANCZOS） |
-| `--encode` | 编码器：`ascii_art`（默认）/ `grayscale_grid` / `color_stats` |
-| `--size N` | 编码网格宽（grayscale_grid 的 `grid_width` / ascii_art 的 `width`） |
-| `--color` | 保留彩色（默认裁剪后灰度化） |
-| `--json` | 以 Observation JSON 输出（供 `report` 汇总） |
-
-### 3. OCR 提取文字
-
-```bash
-uv run vision ocr <图片> --region 0.02,0.42,0.6,0.58 --engine easyocr --languages ch_sim,en
-```
-
-缺省 `--region` 时识别整图。
-
-### 4. 汇总报告
-
-```bash
-uv run vision report obs1.json obs2.json --out report.md --title "图片理解报告"
-```
-
-把多个 `--json` 输出（overview / crop / ocr）汇总为结构化 Markdown：整体概览、局部细节（含坐标与编码器）、OCR 结果、坐标索引表。
+---
 
 ## 三种编码器（模型按需自选）
 
@@ -93,6 +140,8 @@ uv run vision report obs1.json obs2.json --out report.md --title "图片理解�
 | `color_stats` | 分块主色/亮度/边缘密度统计 | 适合颜色与结构判断 |
 
 编码器可插拔：实现 `vision_reader/encoders/base.py` 的 `Encoder` 接口并加 `@register` 即可。
+
+---
 
 ## Python 库用法
 
@@ -115,21 +164,49 @@ print(encode(cr.image, name="grayscale_grid", grid_width=32))  # 编码细看
 result = recognize(cr.image, engine="easyocr", languages=("ch_sim", "en"))  # OCR
 ```
 
+---
+
 ## OCR 引擎
 
 - **默认 EasyOCR（ch_sim + en）**：pip 可装、纯 Python 生态、无需外部服务；首次使用会自动下载模型权重到 `~/.EasyOCR`。
 - **PaddleOCR（可选占位）**：中文效果更优但依赖 PaddlePaddle（体积大）。当前为占位实现，接口已就绪：补全 `vision_reader/ocr/paddleocr_engine.py` 后，一行切换 `--engine paddleocr`。
 
-## MCP Server（可选）
+---
 
-把 vision-reader 封装为 MCP 工具，供 Claude Code / Reasonix 等支持 MCP 的客户端直接调用。
+## MCP Server（让 AI 直接看图）
 
-安装并启动：
+把 vision-reader 封装为 MCP 工具，配置一次后，Claude Code / Reasonix 等支持 MCP 的客户端里的 AI 就能调用工具看图。
+
+### 第 1 步：确认已装 mcp 依赖
 
 ```bash
-uv sync --extra mcp                     # 安装 mcp SDK
-uv run python -m vision_reader.mcp_server   # stdio transport
+uv sync --extra mcp        # 安装过（--extra dev --extra mcp）则跳过
 ```
+
+### 第 2 步：测试 server 能启动
+
+```bash
+uv run python -m vision_reader.mcp_server
+```
+
+启动后不退出、无报错即为正常（按 `Ctrl+C` 停止）。
+
+### 第 3 步：注册到客户端
+
+**Claude Code**——项目根目录 `.mcp.json`（把 `<项目路径>` 换成你的实际路径）：
+
+```json
+{
+  "mcpServers": {
+    "vision-reader": {
+      "command": "uv",
+      "args": ["--directory", "<项目路径>", "run", "python", "-m", "vision_reader.mcp_server"]
+    }
+  }
+}
+```
+
+**Reasonix**：同样以 stdio server 方式注册，指向上述 command/args。
 
 ### 工具清单
 
@@ -142,51 +219,25 @@ uv run python -m vision_reader.mcp_server   # stdio transport
 | `vision_ocr` | 区域 OCR（返回文本 + 置信度 + 归一化 bbox） |
 | `vision_list_encoders` / `vision_list_ocr_engines` | 查询可用的编码器 / OCR 引擎 |
 
-设计要点：`vision_analyze` 一次调用即可完成全部工作，用户只需给出看图指令；需要精细控制时再用分步工具（`vision_load_image` 注册图片后，后续工具只传 `image_id`，避免重复传 base64 浪费 token）。OCR 引擎在 **server 启动时预热**（lifespan），首次调用不卡顿。所有坐标均为归一化 (0~1)。
+**给 AI 的使用建议**：用户说"看这张图"，直接调用 `vision_analyze` 一次即可，无需任何调度；需要精细控制时再用 `vision_load_image` + 分步工具（后续工具只传 `image_id`，避免重复传 base64 浪费 token）。OCR 引擎在 server 启动时预热，首次调用不卡顿。
 
-### 注册到客户端
+---
 
-Claude Code（项目 `.mcp.json`）：
+## 接入 Reasonix / Claude 类 agent（bash 方式，不用 MCP）
 
-```json
-{
-  "mcpServers": {
-    "vision-reader": {
-      "command": "uv",
-      "args": ["--directory", "C:/Users/Lam/Desktop/Workspace/Company/Projects/active/vision-reader", "run", "python", "-m", "vision_reader.mcp_server"]
-    }
-  }
-}
-```
-
-Reasonix：同样以 stdio server 方式注册（在 `.mcp.json` 或全局配置中指向上述 command/args），或在 Reasonix 中把 `uv run --directory <项目路径> python -m vision_reader.mcp_server` 配置为 MCP server 启动命令。
-
-### 使用流程（给模型的建议）
-
-**一键用法（推荐）**：用户说"看这张图"，模型直接调用 `vision_analyze` 一次即可，无需任何调度。
-
-需要更精细控制时再分步：
-
-1. `vision_load_image` 注册图片 → 拿到 `image_id`
-2. `vision_overview(image_id)` 看全图概览，记下值得细看的归一化区域
-3. `vision_crop(image_id, region=..., encoder=ascii_art)` 细看；颜色/像素级需求可换 `color_stats` / `grayscale_grid`
-4. 需要读文字时 `vision_ocr(image_id, region=...)`
-5. 反复 2~4 直到理解足够，再自行汇总语义
-
-## 接入 Reasonix / Claude 类 agent（bash 方式）
-
-不需要 MCP 时，CLI 本身即工具形态，agent 可通过 bash 工具直接调用，例如注册为一个 Reasonix skill：
+CLI 本身即工具形态，agent 可通过 bash 工具直接调用，例如注册为一个 Reasonix skill：
 
 ```markdown
 # 看图的工具（vision-reader）
-当需要理解一张图片时，按渐进式流程调用：
-1. `uv run vision overview <img> --grid 8x8` → 看全图概览，记下值得关注的归一化坐标
-2. `uv run vision crop <img> --region x1,y1,x2,y2 --encode ascii_art` → 细看某区域
+当需要理解一张图片时：
+1. `uv run vision analyze <img> --out report.md` → 一键自动分析，读 report.md
+2. 需要更细看某区域时：`uv run vision crop <img> --region x1,y1,x2,y2 --encode ascii_art`
 3. 需要读文字时：`uv run vision ocr <img> --region x1,y1,x2,y2`
-4. 反复 2~3 直到理解足够，再自行组织语义
 ```
 
-要点：**坐标一律用归一化 (0~1)**；编码器可混用（结构用 ascii_art、颜色用 color_stats、像素级用 grayscale_grid）；token 预算有限时优先 `ascii_art`。
+要点：坐标一律用归一化 (0~1)；token 预算有限时优先 `ascii_art`。
+
+---
 
 ## 项目结构
 
@@ -196,8 +247,10 @@ vision_reader/
 ├── coordinates.py       # 归一化坐标 ↔ 像素换算、越界处理
 ├── crop.py              # 裁剪 + LANCZOS 放大 + 灰度化
 ├── overview.py          # 全图 chunk 网格摘要
+├── analyzer.py          # 一键自动分析（概览→选区域→编码→OCR→报告）
 ├── report.py            # 多次观察汇总为 Markdown
 ├── cli.py               # CLI 入口（vision 命令）
+├── mcp_server.py        # MCP server（FastMCP + stdio）
 ├── demo_runner.py       # demo 完整链路
 ├── encoders/            # 可插拔编码器（grayscale_grid/ascii_art/color_stats）
 ├── ocr/                 # 可插拔 OCR（easyocr 默认 / paddleocr 占位）
@@ -205,6 +258,8 @@ vision_reader/
 tests/                   # pytest 单测（全部基于合成图）
 demo/                    # demo 脚本与输出
 ```
+
+---
 
 ## 测试
 
