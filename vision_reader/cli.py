@@ -9,6 +9,7 @@ from dataclasses import asdict
 
 from . import crop as crop_mod
 from . import image_io, overview
+from .analyzer import analyze
 from .demo_runner import run as run_demo
 from .encoders import encode, names as encoder_names
 from .errors import VisionReaderError
@@ -142,6 +143,26 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_analyze(args) -> int:
+    """一键分析：自动概览 + 选区域 + 编码 + OCR，输出完整报告。"""
+    img = image_io.load_image(args.image)
+    grid = _parse_grid(args.grid)
+    result = analyze(
+        img,
+        grid=grid,
+        top_n=args.top,
+        ocr=not args.no_ocr,
+        title=args.title,
+    )
+    report_md = result.to_report()
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(report_md)
+        print(f"报告已写入: {args.out}")
+    print(report_md)
+    return 0
+
+
 def cmd_demo(args) -> int:
     report_path = run_demo(out_dir=args.out, grid=_parse_grid(args.grid))
     print(f"\nDemo 完成，报告: {report_path}")
@@ -161,6 +182,15 @@ def main(argv: list[str] | None = None) -> int:
         description="为无图像能力的 LLM 提供渐进式视觉细节理解：像素+坐标 → 可读文本",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("analyze", help="【一键】自动分析：概览+选区域+编码+OCR，输出完整报告")
+    p.add_argument("image", help="图片路径或 base64")
+    p.add_argument("--grid", default="8x8", help="chunk 网格 NxM（默认 8x8）")
+    p.add_argument("--top", type=int, default=3, help="自动细看的区域数（默认 3）")
+    p.add_argument("--out", default="", help="报告输出路径（默认仅打印）")
+    p.add_argument("--no-ocr", action="store_true", help="跳过 OCR")
+    p.add_argument("--title", default="图片理解报告")
+    p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("overview", help="全图分块概览（模型的第一眼）")
     p.add_argument("image", help="图片路径或 base64")

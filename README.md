@@ -1,8 +1,10 @@
 # vision-reader
 
-给**没有图像能力的 LLM** 的"看图能力"工具：把图片的像素 + 坐标整理成模型可读的**文本**，让模型通过渐进式局部观察（类似 CNN 的感受野 + 池化）理解复杂图片（截图、文档、图表、UI 界面等）。
+给**没有图像能力的 LLM** 的"看图能力"工具：把图片的像素 + 坐标整理成模型可读的**文本**，让模型理解复杂图片（截图、文档、图表、UI 界面等）。
 
-核心思路：**先看全图 chunk 概览 → 模型决定关注哪些归一化坐标区域 → 裁剪放大并转成文本编码细看 → 可选 OCR 提取文字 → 汇总 Markdown 报告**。
+**最简单用法：一条命令/一次调用，其余全部自动** —— `vision analyze <图片>` 内部自动完成 全图概览 → 自动挑选关注区域 → 编码细看 → OCR → 输出完整 Markdown 报告。用户只需给图，不需要任何调度。
+
+核心思路：**先看全图 chunk 概览（像 CNN 池化）→ 自动选值得细看的归一化坐标区域 → 裁剪放大并转成文本编码 → 可选 OCR → 汇总 Markdown 报告**。
 
 ## 安装
 
@@ -15,21 +17,33 @@ uv sync --extra dev   # 安装依赖（含 EasyOCR/torch）
 ## 快速开始
 
 ```bash
-uv run vision demo                 # 生成合成图并跑完整链路，输出 demo/output/report.md
-uv run vision demo --out my_out    # 自定义输出目录
+uv run vision analyze <图片>              # 【一键】自动分析，输出完整 Markdown 报告
+uv run vision analyze <图片> --out report.md   # 报告保存到文件
+uv run vision demo                        # 演示：生成合成图并一键分析
 ```
 
-也可以直接跑脚本：
-
-```bash
-uv run python demo/demo.py
-```
+`vision analyze` 无需任何参数即可工作（默认 8x8 概览网格、自动挑 3 个区域细看、自动 OCR）。
 
 ## CLI 用法
 
 所有坐标均为**归一化坐标 (0~1)**。
 
-### 1. 全图概览（模型的第一眼）
+### 0. 一键分析（推荐，主用法）
+
+```bash
+uv run vision analyze <图片> [--grid 8x8] [--top 3] [--out report.md] [--no-ocr]
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--grid NxM` | 全图概览网格，默认 8x8 |
+| `--top N` | 自动细看的区域数，默认 3 |
+| `--out 路径` | 报告保存路径（默认仅打印） |
+| `--no-ocr` | 跳过 OCR |
+
+内部自动流程：全图概览 → 按边缘密度排序挑选候选区域、膨胀并合并重叠 → 每个区域自动选编码器（颜色丰富用 `color_stats`，否则 `ascii_art`）→ 疑似文字区域自动 OCR → 汇总四段式 Markdown 报告。
+
+### 1. 全图概览（分步用法，高级）
 
 ```bash
 uv run vision overview <图片> --grid 8x8
@@ -83,22 +97,22 @@ uv run vision report obs1.json obs2.json --out report.md --title "图片理解�
 ## Python 库用法
 
 ```python
-from vision_reader import crop, image_io, overview
-from vision_reader.encoders import encode
-from vision_reader.ocr import recognize
-from vision_reader.report import Observation, build
+from vision_reader import image_io
+from vision_reader.analyzer import analyze
 
 img = image_io.load_image("截图.png")          # 支持路径 / base64 / bytes / ndarray
-chunks = overview.chunks(img, grid=(8, 8))    # 全图概览
-print(overview.overview_text(chunks))
+result = analyze(img, top_n=3, ocr=True)       # 一键分析（无需调度）
+print(result.to_report())                      # 完整 Markdown 报告
 
+# 需要精细控制时，可用分步 API：
+from vision_reader import crop, overview
+from vision_reader.encoders import encode
+from vision_reader.ocr import recognize
+
+chunks = overview.chunks(img, grid=(8, 8))     # 全图概览
 cr = crop.region(img, 0.1, 0.1, 0.5, 0.5, scale=2.0)  # 裁剪放大
 print(encode(cr.image, name="grayscale_grid", grid_width=32))  # 编码细看
-
 result = recognize(cr.image, engine="easyocr", languages=("ch_sim", "en"))  # OCR
-print(result.text)
-
-report_md = build([obs1, obs2], title="图片理解报告")  # 汇总
 ```
 
 ## OCR 引擎
@@ -121,13 +135,14 @@ uv run python -m vision_reader.mcp_server   # stdio transport
 
 | 工具 | 说明 |
 |---|---|
+| `vision_analyze` | **【一键】自动分析整图**：概览+选区域+编码+OCR，返回完整 Markdown 报告 |
 | `vision_load_image` | 注册图片（路径或 base64），返回 `image_id` + 宽高 |
 | `vision_overview` | 全图 chunk 概览（默认 8x8，可调 grid） |
 | `vision_crop` | 按归一化坐标裁剪 + 编码（`region="x1,y1,x2,y2"`，编码器可换） |
 | `vision_ocr` | 区域 OCR（返回文本 + 置信度 + 归一化 bbox） |
 | `vision_list_encoders` / `vision_list_ocr_engines` | 查询可用的编码器 / OCR 引擎 |
 
-设计要点：`vision_load_image` 注册图片后，后续工具只传 `image_id`（server 端缓存），避免重复传 base64 浪费 token；OCR 引擎实例在 server 内复用，模型只加载一次。所有坐标均为归一化 (0~1)，看哪些区域由模型自行决定。
+设计要点：`vision_analyze` 一次调用即可完成全部工作，用户只需给出看图指令；需要精细控制时再用分步工具（`vision_load_image` 注册图片后，后续工具只传 `image_id`，避免重复传 base64 浪费 token）。OCR 引擎在 **server 启动时预热**（lifespan），首次调用不卡顿。所有坐标均为归一化 (0~1)。
 
 ### 注册到客户端
 
@@ -147,6 +162,10 @@ Claude Code（项目 `.mcp.json`）：
 Reasonix：同样以 stdio server 方式注册（在 `.mcp.json` 或全局配置中指向上述 command/args），或在 Reasonix 中把 `uv run --directory <项目路径> python -m vision_reader.mcp_server` 配置为 MCP server 启动命令。
 
 ### 使用流程（给模型的建议）
+
+**一键用法（推荐）**：用户说"看这张图"，模型直接调用 `vision_analyze` 一次即可，无需任何调度。
+
+需要更精细控制时再分步：
 
 1. `vision_load_image` 注册图片 → 拿到 `image_id`
 2. `vision_overview(image_id)` 看全图概览，记下值得细看的归一化区域

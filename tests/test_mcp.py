@@ -18,6 +18,7 @@ def test_tools_registered():
     tools = asyncio.run(_list())
     names = {t.name for t in tools}
     assert {
+        "vision_analyze",
         "vision_load_image",
         "vision_overview",
         "vision_crop",

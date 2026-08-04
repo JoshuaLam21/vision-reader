@@ -10,16 +10,18 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+
 import numpy as np
 from mcp.server.fastmcp import FastMCP
 
 from . import crop as crop_mod
 from . import image_io, overview
+from .analyzer import analyze
 from .encoders import encode, names as encoder_names
 from .errors import VisionReaderError
-from .ocr.base import get as ocr_get_engine, names as ocr_engine_names
-
-# ---- 图像缓存：image_id → RGB ndarray ----
+from .ocr.base import get as ocr_get_engine, names as ocr_engine_names# ---- 图像缓存：image_id → RGB ndarray ----
 _IMAGES: dict[str, np.ndarray] = {}
 _IMAGE_COUNTER = 0
 
@@ -104,16 +106,64 @@ def _do_ocr(
     }
 
 
+def _warmup_ocr() -> None:
+    """启动时预加载 OCR 引擎（ch_sim+en），避免首次工具调用时在请求线程里初始化 torch。
+
+    预热失败不影响启动：工具调用时会走常规惰性加载。
+    """
+    try:
+        engine = _get_engine("easyocr", ("ch_sim", "en"))
+        engine.recognize(np.zeros((40, 120, 3), np.uint8))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    await asyncio.to_thread(_warmup_ocr)
+    yield {}
+
+
 mcp = FastMCP(
     "vision-reader",
+    lifespan=lifespan,
     instructions=(
-        "给无图像能力的 LLM 的看图工具。推荐流程："
-        "1) vision_load_image 注册图片，拿到 image_id；"
-        "2) vision_overview 看全图 chunk 概览（每块含归一化坐标与统计），自行决定值得细看的区域；"
-        "3) vision_crop 按归一化坐标 (0~1) 裁剪并编码成文本细看（编码器可选 ascii_art/grayscale_grid/color_stats）；"
-        "4) 需要读文字时 vision_ocr。可反复 3~4 渐进聚焦，最后自行汇总语义。"
+        "给无图像能力的 LLM 的看图工具。最简单用法：直接调用 vision_analyze 一次即可拿到完整报告"
+        "（自动完成全图概览、自动挑选关注区域、编码细看、OCR）。"
+        "需要更精细控制时，可先用 vision_load_image 注册图片拿 image_id，"
+        "再 vision_overview / vision_crop / vision_ocr 分步观察。"
+        "所有坐标为归一化 (0~1)。"
     ),
 )
+
+
+@mcp.tool()
+def vision_analyze(image: str, grid: str = "8x8", top: int = 3, ocr: bool = True) -> dict:
+    """【一键】自动分析整张图：自动完成全图概览、自动挑选关注区域、编码细看、可选 OCR，返回完整 Markdown 报告。
+
+    用户只需给出看图指令，模型调用本工具一次即可，无需分步调度。
+    image 为 image_id（推荐）或图片路径/base64；grid 如 8x8；top 为细看区域数。
+    """
+    try:
+        parts = [int(v) for v in grid.lower().split("x")]
+        if len(parts) != 2 or any(p < 1 for p in parts):
+            raise ValueError("grid 格式应为 NxM，如 8x8")
+        result = analyze(_resolve_image(image), grid=tuple(parts), top_n=max(1, top), ocr=ocr)  # type: ignore[arg-type]
+        return {
+            "report": result.to_report(),
+            "regions": [
+                {
+                    "label": r.label,
+                    "region": tuple(round(v, 4) for v in r.region),
+                    "encoder": r.encoder,
+                    "edge_density": r.edge_density,
+                    "ocr_text": r.ocr_text,
+                }
+                for r in result.regions
+            ],
+        }
+    except (VisionReaderError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool()
