@@ -106,9 +106,57 @@ report_md = build([obs1, obs2], title="图片理解报告")  # 汇总
 - **默认 EasyOCR（ch_sim + en）**：pip 可装、纯 Python 生态、无需外部服务；首次使用会自动下载模型权重到 `~/.EasyOCR`。
 - **PaddleOCR（可选占位）**：中文效果更优但依赖 PaddlePaddle（体积大）。当前为占位实现，接口已就绪：补全 `vision_reader/ocr/paddleocr_engine.py` 后，一行切换 `--engine paddleocr`。
 
-## 接入 Reasonix / Claude 类 agent
+## MCP Server（可选）
 
-CLI 本身即工具形态，agent 可通过 bash 工具直接调用，例如注册为一个 Reasonix skill：
+把 vision-reader 封装为 MCP 工具，供 Claude Code / Reasonix 等支持 MCP 的客户端直接调用。
+
+安装并启动：
+
+```bash
+uv sync --extra mcp                     # 安装 mcp SDK
+uv run python -m vision_reader.mcp_server   # stdio transport
+```
+
+### 工具清单
+
+| 工具 | 说明 |
+|---|---|
+| `vision_load_image` | 注册图片（路径或 base64），返回 `image_id` + 宽高 |
+| `vision_overview` | 全图 chunk 概览（默认 8x8，可调 grid） |
+| `vision_crop` | 按归一化坐标裁剪 + 编码（`region="x1,y1,x2,y2"`，编码器可换） |
+| `vision_ocr` | 区域 OCR（返回文本 + 置信度 + 归一化 bbox） |
+| `vision_list_encoders` / `vision_list_ocr_engines` | 查询可用的编码器 / OCR 引擎 |
+
+设计要点：`vision_load_image` 注册图片后，后续工具只传 `image_id`（server 端缓存），避免重复传 base64 浪费 token；OCR 引擎实例在 server 内复用，模型只加载一次。所有坐标均为归一化 (0~1)，看哪些区域由模型自行决定。
+
+### 注册到客户端
+
+Claude Code（项目 `.mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "vision-reader": {
+      "command": "uv",
+      "args": ["--directory", "C:/Users/Lam/Desktop/Workspace/Company/Projects/active/vision-reader", "run", "python", "-m", "vision_reader.mcp_server"]
+    }
+  }
+}
+```
+
+Reasonix：同样以 stdio server 方式注册（在 `.mcp.json` 或全局配置中指向上述 command/args），或在 Reasonix 中把 `uv run --directory <项目路径> python -m vision_reader.mcp_server` 配置为 MCP server 启动命令。
+
+### 使用流程（给模型的建议）
+
+1. `vision_load_image` 注册图片 → 拿到 `image_id`
+2. `vision_overview(image_id)` 看全图概览，记下值得细看的归一化区域
+3. `vision_crop(image_id, region=..., encoder=ascii_art)` 细看；颜色/像素级需求可换 `color_stats` / `grayscale_grid`
+4. 需要读文字时 `vision_ocr(image_id, region=...)`
+5. 反复 2~4 直到理解足够，再自行汇总语义
+
+## 接入 Reasonix / Claude 类 agent（bash 方式）
+
+不需要 MCP 时，CLI 本身即工具形态，agent 可通过 bash 工具直接调用，例如注册为一个 Reasonix skill：
 
 ```markdown
 # 看图的工具（vision-reader）
