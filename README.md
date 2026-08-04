@@ -253,6 +253,9 @@ uv run python -m vision_reader.mcp_server
 
 ## 接入你的 AI Agent（不用 MCP，bash 方式）
 
+> 📖 **给 agent 的完整知识卡见 [`AGENT-GUIDE.md`](AGENT-GUIDE.md)**（六层知识 + prompt 模板 + 调用示例）。
+> 🎯 **现成 skill 见 [`skills/vision-reader/SKILL.md`](skills/vision-reader/SKILL.md)**——直接复制到 `.claude/skills/` 或 Reasonix skills 目录即可用。
+
 不想用 MCP 时，CLI 本身即工具形态，任何 agent 都可以通过 bash 直接调用。做法：把下面的说明写进你的 agent 的 skill / 命令配置：
 
 ```markdown
