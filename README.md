@@ -175,7 +175,16 @@ result = recognize(cr.image, engine="easyocr", languages=("ch_sim", "en"))  # OC
 
 ## MCP Server（让 AI 直接看图）
 
-把 vision-reader 封装为 MCP 工具，配置一次后，Claude Code / Reasonix 等支持 MCP 的客户端里的 AI 就能调用工具看图。
+把 vision-reader 封装为 MCP 工具，配置一次后，Claude Code / Reasonix / Cursor 等支持 MCP 的客户端里的 AI 就能调用工具看图。
+
+### 第 0 步（可选）：全局安装，注册时不用写路径
+
+```bash
+uv tool install . --extra mcp   # 全局安装 vision / vision-mcp 命令（含依赖，约几百 MB，一次性）
+vision-mcp                     # 测试：启动后不退出、无报错即正常（Ctrl+C 停止）
+```
+
+装完后 `vision-mcp` 是全局命令，注册配置只需一行（见第 3 步"方式一"），任何目录都能用。
 
 ### 第 1 步：确认已装 mcp 依赖
 
@@ -193,7 +202,19 @@ uv run python -m vision_reader.mcp_server
 
 ### 第 3 步：注册到客户端
 
-**Claude Code**——项目根目录 `.mcp.json`（把 `<项目路径>` 换成你的实际路径）：
+**方式一：全局命令（推荐，做了第 0 步后适用）**——Claude Code 项目根目录 `.mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "vision-reader": {
+      "command": "vision-mcp"
+    }
+  }
+}
+```
+
+**方式二：项目路径**（没做第 0 步；把 `<项目路径>` 换成你的实际路径）：
 
 ```json
 {
@@ -206,7 +227,7 @@ uv run python -m vision_reader.mcp_server
 }
 ```
 
-**Reasonix**：同样以 stdio server 方式注册，指向上述 command/args。
+**Reasonix / Cursor**：同样以 stdio server 方式注册，指向上述 command/args。
 
 ### 工具清单
 
@@ -221,21 +242,25 @@ uv run python -m vision_reader.mcp_server
 
 **给 AI 的使用建议**：用户说"看这张图"，直接调用 `vision_analyze` 一次即可，无需任何调度；需要精细控制时再用 `vision_load_image` + 分步工具（后续工具只传 `image_id`，避免重复传 base64 浪费 token）。OCR 引擎在 server 启动时预热，首次调用不卡顿。
 
+### 验证接入成功
+
+注册后在客户端里对 AI 说：**"分析这张图：<图片路径>"**。AI 应自动调用 `vision_analyze` 并返回一份 Markdown 报告（含整体概览、局部细节、OCR 文字、坐标索引）。如果 AI 说找不到工具，检查 `.mcp.json` 的 command/args 和路径是否正确，重启客户端生效。
+
 ---
 
-## 接入 Reasonix / Claude 类 agent（bash 方式，不用 MCP）
+## 接入你的 AI Agent（不用 MCP，bash 方式）
 
-CLI 本身即工具形态，agent 可通过 bash 工具直接调用，例如注册为一个 Reasonix skill：
+不想用 MCP 时，CLI 本身即工具形态，任何 agent 都可以通过 bash 直接调用。做法：把下面的说明写进你的 agent 的 skill / 命令配置：
 
 ```markdown
 # 看图的工具（vision-reader）
 当需要理解一张图片时：
-1. `uv run vision analyze <img> --out report.md` → 一键自动分析，读 report.md
+1. `uv run vision analyze <img> --out report.md` → 一键自动分析，读 report.md 理解图片
 2. 需要更细看某区域时：`uv run vision crop <img> --region x1,y1,x2,y2 --encode ascii_art`
 3. 需要读文字时：`uv run vision ocr <img> --region x1,y1,x2,y2`
 ```
 
-要点：坐标一律用归一化 (0~1)；token 预算有限时优先 `ascii_art`。
+前提：agent 运行环境已安装 vision-reader（`uv sync --extra dev --extra mcp`，或全局 `uv tool install . --extra mcp` 后直接用 `vision analyze`）。要点：坐标一律用归一化 (0~1)；token 预算有限时优先 `ascii_art`。
 
 ---
 

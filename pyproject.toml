@@ -20,6 +20,7 @@ mcp = [
 
 [project.scripts]
 vision = "vision_reader.cli:main"
+vision-mcp = "vision_reader.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
