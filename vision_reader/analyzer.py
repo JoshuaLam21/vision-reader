@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -19,6 +20,16 @@ from . import overview
 from .encoders import encode
 from .ocr import recognize
 from .report import Observation, build
+
+# 报告开头的"模型导读"：帮助模型正确解读像素统计输出
+GUIDE = (
+    "> **给模型的导读**：本报告由像素统计生成，不是图片本身，请据此结合常识推断。\n"
+    "> - 坐标均为归一化 (0~1)，(0,0)=左上角，(1,1)=右下角\n"
+    "> - ASCII 明暗图字符表（暗→亮）: ` .:-=+*#%@`；`%%`≈深色实体，`.`≈浅色空白\n"
+    "> - 灰度网格：数字越大越亮（0=最暗）\n"
+    "> - 边缘密度高（>0.15）≈ 该区域有文字/线条/纹理，值得注意\n"
+    "> - OCR 文字可能含识别错误，请结合上下文判断\n"
+)
 
 
 @dataclass
@@ -30,6 +41,7 @@ class RegionDetail:
     encoder: str
     encoded: str
     edge_density: float
+    color_hex: str = ""
     ocr_text: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -41,9 +53,10 @@ class AnalysisResult:
     overview_text: str
     regions: list[RegionDetail]
     title: str = "图片理解报告"
+    layout_points: list[str] = field(default_factory=list)  # 布局要点（摘要模式用）
 
     def to_report(self) -> str:
-        """组装为完整 Markdown 报告。"""
+        """组装为完整 Markdown 报告（导读 + 四段式）。"""
         observations = [
             Observation(kind="overview", label="整体概览", content=self.overview_text),
         ]
@@ -67,7 +80,61 @@ class AnalysisResult:
                         meta={"engine": "auto"},
                     )
                 )
-        return build(observations, title=self.title)
+        return GUIDE + "\n" + build(observations, title=self.title)
+
+    def to_summary(self) -> str:
+        """组装为 token 精简的摘要报告（导读 + 布局要点 + 区域要点表 + OCR 汇总）。"""
+        lines = [
+            f"# {self.title}（摘要）",
+            "",
+            GUIDE,
+            "",
+            "## 布局要点",
+            "",
+        ]
+        lines.extend(f"- {p}" for p in self.layout_points)
+        if not self.layout_points:
+            lines.append("_（无显著布局特征）_")
+        lines += ["", "## 区域要点", "", "| 区域 | 位置 | 主色 | 边缘密度 | 特征 |", "|---|---|---|---|---|"]
+        for r in self.regions:
+            box = tuple(round(v, 3) for v in r.region)
+            feature = "疑似文字/纹理" if r.edge_density >= 0.15 else "普通区域"
+            lines.append(f"| {r.label} | {box} | {r.color_hex or '-'} | {r.edge_density:.2f} | {feature} |")
+
+        ocr_lines = [r for r in self.regions if r.ocr_text]
+        lines += ["", "## OCR 汇总", ""]
+        if ocr_lines:
+            for r in ocr_lines:
+                lines.append(f"- {r.label}（{tuple(round(v, 3) for v in r.region)}）: {r.ocr_text}")
+        else:
+            lines.append("_（未识别到文字）_")
+        return "\n".join(lines) + "\n"
+
+
+def _build_layout_points(chunks: list[overview.Chunk]) -> list[str]:
+    """从 chunk 统计提炼布局要点：显著主色区域 + 高信息区域。"""
+    points: list[str] = []
+    total = len(chunks) or 1
+
+    # 主色分布（排除占比过大的单一背景色也列出，供判断）
+    color_count = Counter(c.color_hex for c in chunks)
+    for hexv, n in color_count.most_common(3):
+        if n / total < 0.05:
+            break
+        rep = next((c for c in chunks if c.color_hex == hexv), None)
+        if rep is None:
+            continue
+        rgb = f"({rep.color_rgb[0]},{rep.color_rgb[1]},{rep.color_rgb[2]})"
+        box = (round(rep.x1, 2), round(rep.y1, 2), round(rep.x2, 2), round(rep.y2, 2))
+        points.append(f"主色 {hexv} {rgb} 约占 {n}/{total} 块，示例区域 {box}")
+
+    # 高信息区域（文字/纹理密集）
+    hot = sorted(chunks, key=lambda c: c.edge_density, reverse=True)[:3]
+    for c in hot:
+        if c.edge_density >= 0.15:
+            box = (round(c.x1, 2), round(c.y1, 2), round(c.x2, 2), round(c.y2, 2))
+            points.append(f"高信息区域 {box}：边缘密度 {c.edge_density:.2f}（疑似文字/线条/纹理）")
+    return points
 
 
 # ---- 自动选区域 ----
@@ -153,20 +220,22 @@ def analyze(
     """对整图做一次自动分析，返回完整结果（含 Markdown 报告）。"""
     chunks = overview.chunks(img, grid=grid)
     overview_text = overview.overview_text(chunks, grid=grid)
+    layout_points = _build_layout_points(chunks)
 
     regions: list[RegionDetail] = []
     for bbox in select_regions(chunks, grid=grid, top_n=top_n):
         cr = crop_mod.region(img, *bbox, scale=2.0, grayscale=False)  # 保留彩色供统计/OCR
         x1, y1, x2, y2 = bbox
 
-        # 区域统计：颜色方差 + 边缘密度（取覆盖块的平均）
-        block_vars = [
-            c.color_variance
-            for c in chunks
-            if c.x2 > x1 and c.x1 < x2 and c.y2 > y1 and c.y1 < y2
-        ]
+        # 区域统计：颜色方差 + 边缘密度 + 主色（取覆盖块）
+        covered = [c for c in chunks if c.x2 > x1 and c.x1 < x2 and c.y2 > y1 and c.y1 < y2]
+        block_vars = [c.color_variance for c in covered]
         color_variance = float(np.mean(block_vars)) if block_vars else 0.0
-        edge_density = max((c.edge_density for c in chunks if c.x2 > x1 and c.x1 < x2 and c.y2 > y1 and c.y1 < y2), default=0.0)
+        edge_density = max((c.edge_density for c in covered), default=0.0)
+        if covered:
+            color_hex = Counter(c.color_hex for c in covered).most_common(1)[0][0]
+        else:
+            color_hex = ""
 
         encoder = _pick_encoder(color_variance, edge_density)
         kwargs = {"name": encoder}
@@ -191,9 +260,15 @@ def analyze(
                 encoder=encoder,
                 encoded=encoded,
                 edge_density=round(edge_density, 3),
+                color_hex=color_hex,
                 ocr_text=ocr_text,
                 warnings=cr.warnings,
             )
         )
 
-    return AnalysisResult(overview_text=overview_text, regions=regions, title=title)
+    return AnalysisResult(
+        overview_text=overview_text,
+        regions=regions,
+        title=title,
+        layout_points=layout_points,
+    )

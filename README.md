@@ -106,7 +106,7 @@ uv run vision demo
 ### 一键分析（推荐，主用法）
 
 ```bash
-uv run vision analyze <图片> [--grid 8x8] [--top 3] [--out report.md] [--no-ocr]
+uv run vision analyze <图片> [--grid 8x8] [--top 3] [--out report.md] [--summary] [--no-ocr]
 ```
 
 | 参数 | 说明 |
@@ -114,9 +114,12 @@ uv run vision analyze <图片> [--grid 8x8] [--top 3] [--out report.md] [--no-oc
 | `--grid NxM` | 全图概览网格，默认 8x8 |
 | `--top N` | 自动细看的区域数，默认 3 |
 | `--out 路径` | 报告保存路径（默认仅打印） |
+| `--summary` | 输出 token 精简摘要（布局要点+区域要点+OCR 汇总，约省 80% token；适合大图/长上下文受限） |
 | `--no-ocr` | 跳过 OCR |
 
-内部自动流程：全图概览 → 按边缘密度排序挑选候选区域、膨胀并合并重叠 → 每个区域自动选编码器（颜色丰富用 `color_stats`，否则 `ascii_art`）→ 疑似文字区域自动 OCR → 汇总四段式 Markdown 报告。
+内部自动流程：全图概览 → 按边缘密度排序挑选候选区域、膨胀并合并重叠 → 每个区域自动选编码器（颜色丰富用 `color_stats`，否则 `ascii_art`）→ 疑似文字区域自动 OCR → 汇总 Markdown 报告。
+
+**报告开头自带"给模型的导读"**：说明坐标归一化、ASCII 字符含义、边缘密度解读、OCR 可能出错等，帮助模型正确解读像素统计，无需额外提示。
 
 ### 分步用法（高级）
 
@@ -233,7 +236,7 @@ uv run python -m vision_reader.mcp_server
 
 | 工具 | 说明 |
 |---|---|
-| `vision_analyze` | **【一键】自动分析整图**：概览+选区域+编码+OCR，返回完整 Markdown 报告 |
+| `vision_analyze` | **【一键】自动分析整图**：概览+选区域+编码+OCR，返回完整 Markdown 报告（`summary=True` 返回精简摘要） |
 | `vision_load_image` | 注册图片（路径或 base64），返回 `image_id` + 宽高 |
 | `vision_overview` | 全图 chunk 概览（默认 8x8，可调 grid） |
 | `vision_crop` | 按归一化坐标裁剪 + 编码（`region="x1,y1,x2,y2"`，编码器可换） |

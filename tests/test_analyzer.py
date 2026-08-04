@@ -46,12 +46,50 @@ def test_analyze_structure(test_image):
 def test_analyze_report(test_image):
     result = analyze(test_image, grid=(8, 8), top_n=2, ocr=False)
     md = result.to_report()
-    assert md.startswith("# 图片理解报告")
+    assert "# 图片理解报告" in md
     assert "## 1. 整体概览" in md
     assert "## 2. 局部细节" in md
     assert "## 4. 坐标索引" in md
     for r in result.regions:
         assert r.label in md
+
+
+def test_report_contains_guide(test_image):
+    """完整报告开头应包含模型导读。"""
+    result = analyze(test_image, grid=(8, 8), top_n=2, ocr=False)
+    md = result.to_report()
+    assert "给模型的导读" in md
+    assert "坐标均为归一化" in md
+    assert "ASCII 明暗图字符表" in md
+
+
+def test_summary_structure(test_image):
+    """摘要模式：布局要点 + 区域要点表 + OCR 汇总。"""
+    result = analyze(test_image, grid=(8, 8), top_n=2, ocr=False)
+    md = result.to_summary()
+    assert "（摘要）" in md
+    assert "## 布局要点" in md
+    assert "## 区域要点" in md
+    assert "## OCR 汇总" in md
+    assert "给模型的导读" in md
+    # 区域要点表含主色
+    assert "| 区域1 |" in md
+    assert result.regions[0].color_hex  # 主色非空
+
+
+def test_summary_is_smaller_than_report(test_image):
+    """摘要 token 应明显小于完整报告。"""
+    result = analyze(test_image, grid=(8, 8), top_n=2, ocr=False)
+    full = result.to_report()
+    summary = result.to_summary()
+    assert len(summary) < len(full) * 0.6  # 至少砍掉 40%
+
+
+def test_layout_points_detected(test_image):
+    """布局要点应包含主色分布与高信息区域。"""
+    result = analyze(test_image, grid=(8, 8), top_n=2, ocr=False)
+    assert result.layout_points
+    assert any("主色" in p for p in result.layout_points)
 
 
 def test_pick_encoder_heuristic():

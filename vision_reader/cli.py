@@ -154,7 +154,7 @@ def cmd_analyze(args) -> int:
         ocr=not args.no_ocr,
         title=args.title,
     )
-    report_md = result.to_report()
+    report_md = result.to_summary() if args.summary else result.to_report()
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(report_md)
@@ -188,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--grid", default="8x8", help="chunk 网格 NxM（默认 8x8）")
     p.add_argument("--top", type=int, default=3, help="自动细看的区域数（默认 3）")
     p.add_argument("--out", default="", help="报告输出路径（默认仅打印）")
+    p.add_argument("--summary", action="store_true", help="输出 token 精简摘要（默认完整报告）")
     p.add_argument("--no-ocr", action="store_true", help="跳过 OCR")
     p.add_argument("--title", default="图片理解报告")
     p.set_defaults(func=cmd_analyze)

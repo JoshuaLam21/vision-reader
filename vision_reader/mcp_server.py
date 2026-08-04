@@ -138,25 +138,29 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def vision_analyze(image: str, grid: str = "8x8", top: int = 3, ocr: bool = True) -> dict:
+def vision_analyze(image: str, grid: str = "8x8", top: int = 3, ocr: bool = True, summary: bool = False) -> dict:
     """【一键】自动分析整张图：自动完成全图概览、自动挑选关注区域、编码细看、可选 OCR，返回完整 Markdown 报告。
 
     用户只需给出看图指令，模型调用本工具一次即可，无需分步调度。
-    image 为 image_id（推荐）或图片路径/base64；grid 如 8x8；top 为细看区域数。
+    image 为 image_id（推荐）或图片路径/base64；grid 如 8x8；top 为细看区域数；
+    summary=True 时返回 token 精简的摘要报告（布局要点+区域要点+OCR 汇总，适合大图或 token 预算有限）。
     """
     try:
         parts = [int(v) for v in grid.lower().split("x")]
         if len(parts) != 2 or any(p < 1 for p in parts):
             raise ValueError("grid 格式应为 NxM，如 8x8")
         result = analyze(_resolve_image(image), grid=tuple(parts), top_n=max(1, top), ocr=ocr)  # type: ignore[arg-type]
+        report_text = result.to_summary() if summary else result.to_report()
         return {
-            "report": result.to_report(),
+            "report": report_text,
+            "summary": summary,
             "regions": [
                 {
                     "label": r.label,
                     "region": tuple(round(v, 4) for v in r.region),
                     "encoder": r.encoder,
                     "edge_density": r.edge_density,
+                    "color_hex": r.color_hex,
                     "ocr_text": r.ocr_text,
                 }
                 for r in result.regions
