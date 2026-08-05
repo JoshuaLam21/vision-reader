@@ -208,6 +208,50 @@ def _pick_encoder(color_variance: float, edge_density: float) -> str:
 
 # ---- 主入口 ----
 
+def _text_regions(items, expand: float = 0.6) -> list[tuple[float, float, float, float]]:
+    """把 OCR 结果的 bbox 扩展成观察区域，并按"行"合并。
+
+    文字是"哪里值得看"的最强信号（真实 UI/文档/图表都含文字），
+    优先于边缘密度猜测。expand 为相对文字大小的扩展比例。
+    同一行（y 方向重叠）的文字合并为一个区域，避免导航栏/标题被切碎。
+    """
+    boxes: list[tuple[float, float, float, float]] = []
+    for it in items:
+        x1, y1, x2, y2 = it.bbox
+        w, h = x2 - x1, y2 - y1
+        boxes.append(
+            (
+                max(0.0, x1 - w * expand * 0.5),
+                max(0.0, y1 - h * expand),
+                min(1.0, x2 + w * expand * 0.5),
+                min(1.0, y2 + h * expand),
+            )
+        )
+    # 按 y 排序，y 方向重叠（同一行）则横向合并
+    merged: list[tuple[float, float, float, float]] = []
+    for b in sorted(boxes, key=lambda r: (r[1], r[0])):
+        if merged and b[1] < merged[-1][3] and b[3] > merged[-1][1]:
+            merged[-1] = _bbox_union(merged[-1], b)
+        else:
+            merged.append(b)
+    return merged
+
+
+def _ocr_text_in(items, region: tuple[float, float, float, float]) -> str:
+    """取区域内的 OCR 文本（按 bbox 交集）。"""
+    x1, y1, x2, y2 = region
+    hits = [
+        it.text
+        for it in items
+        if it.bbox[0] < x2 and it.bbox[2] > x1 and it.bbox[1] < y2 and it.bbox[3] > y1
+    ]
+    return "\n".join(hits)
+
+
+def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
 def analyze(
     img: np.ndarray,
     grid: tuple[int, int] = (8, 8),
@@ -215,16 +259,40 @@ def analyze(
     ocr: bool = True,
     languages: tuple[str, ...] = ("ch_sim", "en"),
     title: str = "图片理解报告",
-    edge_threshold: float = 0.12,
 ) -> AnalysisResult:
-    """对整图做一次自动分析，返回完整结果（含 Markdown 报告）。"""
+    """对整图做一次自动分析，返回完整结果（含 Markdown 报告）。
+
+    区域选择是 **OCR 驱动**的：先对整图 OCR 一次，文字 bbox 直接作为观察区域
+    （真实截图/文档/图表都含文字，比边缘密度猜测可靠得多），
+    不足的坑位再用边缘密度补充非文字高信息区域。
+    """
     chunks = overview.chunks(img, grid=grid)
     overview_text = overview.overview_text(chunks, grid=grid)
     layout_points = _build_layout_points(chunks)
 
-    regions: list[RegionDetail] = []
-    for bbox in select_regions(chunks, grid=grid, top_n=top_n):
-        cr = crop_mod.region(img, *bbox, scale=2.0, grayscale=False)  # 保留彩色供统计/OCR
+    # 整图 OCR（只跑一次，结果按坐标复用于各区域）
+    full_items = []
+    if ocr:
+        try:
+            full_items = recognize(img, engine="easyocr", languages=languages).items
+        except Exception:  # noqa: BLE001  OCR 失败不影响整体分析
+            full_items = []
+
+    # 区域来源 1：OCR 文字 bbox（最可靠）
+    text_regions = _text_regions(full_items)
+    # 区域来源 2：边缘密度高信息区（补充非文字区域，去掉与文字区重叠的）
+    edge_regions = select_regions(chunks, grid=grid, top_n=max(1, top_n))
+    regions = list(text_regions)
+    for r in edge_regions:
+        if len(regions) >= top_n:
+            break
+        if not any(_overlaps(r, t) for t in text_regions):
+            regions.append(r)
+    regions = regions[:top_n]
+
+    region_details: list[RegionDetail] = []
+    for bbox in regions:
+        cr = crop_mod.region(img, *bbox, scale=2.0, grayscale=False)  # 保留彩色供统计
         x1, y1, x2, y2 = bbox
 
         # 区域统计：颜色方差 + 边缘密度 + 主色（取覆盖块）
@@ -245,17 +313,11 @@ def analyze(
             kwargs["grid_width"] = 28
         encoded = encode(cr.image, **kwargs)
 
-        ocr_text = ""
-        if ocr and edge_density >= edge_threshold:
-            try:
-                result = recognize(cr.image, engine="easyocr", languages=languages)
-                ocr_text = result.text
-            except Exception:  # noqa: BLE001  OCR 失败不影响整体分析
-                ocr_text = ""
+        ocr_text = _ocr_text_in(full_items, bbox) if ocr else ""
 
-        regions.append(
+        region_details.append(
             RegionDetail(
-                label=f"区域{len(regions) + 1}",
+                label=f"区域{len(region_details) + 1}",
                 region=bbox,
                 encoder=encoder,
                 encoded=encoded,
@@ -268,7 +330,7 @@ def analyze(
 
     return AnalysisResult(
         overview_text=overview_text,
-        regions=regions,
+        regions=region_details,
         title=title,
         layout_points=layout_points,
     )

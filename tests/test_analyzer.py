@@ -122,3 +122,22 @@ def test_analyze_with_ocr(analyzer_ocr, test_image):
     result = analyze(arr, grid=(8, 8), top_n=3, ocr=True, languages=("en",))
     joined = " ".join(r.ocr_text for r in result.regions).lower()
     assert "vision" in joined or "reader" in joined
+
+
+def test_dark_bg_light_text_covered_by_ocr(analyzer_ocr):
+    """回归实测 bug：暗背景白字（边缘密度低）时，OCR 驱动必须仍覆盖文字区域。
+
+    对应真实截图 upoints-hero.png 的场景：文字存在但 chunk 边缘密度 < 0.12，
+    旧逻辑因此跳过 OCR，漏掉全部文字。
+    """
+    canvas = Image.new("RGB", (800, 400), (10, 10, 10))  # 暗背景
+    d = ImageDraw.Draw(canvas)
+    font = find_font(40)
+    d.text((40, 50), "U Points Products", fill=(255, 255, 255), font=font)
+    arr = np.asarray(canvas)
+
+    result = analyze(arr, grid=(8, 8), top_n=3, ocr=True, languages=("en",))
+    joined = " ".join(r.ocr_text for r in result.regions).lower()
+    assert "points" in joined or "products" in joined
+    # 文字区域本身应被选中为观察区域（OCR 驱动）
+    assert any(r.ocr_text for r in result.regions)
