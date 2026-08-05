@@ -280,13 +280,15 @@ def analyze(
 
     # 区域来源 1：OCR 文字 bbox（最可靠）
     text_regions = _text_regions(full_items)
-    # 区域来源 2：边缘密度高信息区（补充非文字区域，去掉与文字区重叠的）
+    # 区域来源 2：边缘密度高信息区（补充非文字区域）
+    # 注意：文字区最多占 top_n-1 个，保证至少留一个坑位给"视觉内容区"
+    # （3D 视图/图表/照片主体），否则真实截图的控件文字会把视觉区挤掉。
     edge_regions = select_regions(chunks, grid=grid, top_n=max(1, top_n))
-    regions = list(text_regions)
+    regions = list(text_regions[: max(0, top_n - 1)])
     for r in edge_regions:
         if len(regions) >= top_n:
             break
-        if not any(_overlaps(r, t) for t in text_regions):
+        if not any(_overlaps(r, t) for t in regions):
             regions.append(r)
     regions = regions[:top_n]
 

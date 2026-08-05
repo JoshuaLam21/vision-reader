@@ -141,3 +141,27 @@ def test_dark_bg_light_text_covered_by_ocr(analyzer_ocr):
     assert "points" in joined or "products" in joined
     # 文字区域本身应被选中为观察区域（OCR 驱动）
     assert any(r.ocr_text for r in result.regions)
+
+
+def test_visual_region_not_squeezed_by_text(analyzer_ocr):
+    """回归实测 bug：大量文字区域不应挤掉高边缘的视觉内容区（3D/图表/照片）。
+
+    对应 verify-3d-shot.png 的场景：OCR 文字区域占满 top_n，
+    导致 3D 视图区（边缘密度最高 0.62）完全没被选中。
+    """
+    canvas = Image.new("RGB", (800, 600), (230, 230, 230))
+    d = ImageDraw.Draw(canvas)
+    font = find_font(24)
+    # 左侧多行文字（模拟表单/控件文字）
+    for i, txt in enumerate(["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]):
+        d.text((20, 20 + i * 40), txt, fill=(0, 0, 0), font=font)
+    # 右下角高对比几何图形（高边缘密度的视觉内容）
+    d.rectangle([560, 400, 780, 580], fill=(20, 20, 20))
+    d.rectangle([600, 420, 700, 500], fill=(240, 240, 240))
+    arr = np.asarray(canvas)
+
+    result = analyze(arr, grid=(8, 8), top_n=5, ocr=True, languages=("en",))
+    # 右下视觉区应被选中（区域 x 起点 > 0.6 且 y 起点 > 0.55）
+    assert any(r.region[0] > 0.6 and r.region[1] > 0.55 for r in result.regions), (
+        f"视觉区未被选中: {[tuple(round(v, 2) for v in r.region) for r in result.regions]}"
+    )
